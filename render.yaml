@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: nvidia-nim-janitorai
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NIM_API_KEY
+        sync: false
+      - key: NIM_API_BASE
+        value: https://integrate.api.nvidia.com/v1
+      - key: SHOW_REASONING
+        value: false
+      - key: ENABLE_THINKING_MODE
+        value: false
+    healthCheckPath: /health
