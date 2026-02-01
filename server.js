@@ -16,10 +16,10 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
-const SHOW_REASONING = false;
+const SHOW_REASONING = process.env.SHOW_REASONING === 'true' || false;
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false;
+const ENABLE_THINKING_MODE = process.env.ENABLE_THINKING_MODE === 'true' || false;
 
 // 🎯 OPTIMIZED MODEL MAPPING FOR JANITOR AI
 // Best models from NVIDIA NIM API (January 2025)
@@ -49,6 +49,62 @@ const MODEL_MAPPING = {
   'llama-405b': 'meta/llama-3.1-405b-instruct',
   'llama-8b': 'meta/llama-3.1-8b-instruct'
 };
+
+// 🛡️ ROLEPLAY GUARD - Injected into every request to prevent the model from speaking as the user
+const RP_GUARD_INSTRUCTION = `You are ONLY the character described in the system prompt or conversation. Follow these rules strictly:
+- You ONLY speak, act, and think as the character. You do NEVER write or generate any dialogue, actions, or thoughts for the user or any other character that the user is playing.
+- Do NOT use labels like "User:", "Human:", "You:" or any prefix to simulate the user's side of the conversation.
+- Do NOT continue the conversation by inventing what the user says or does next.
+- Stop your response immediately after your character's turn ends.
+- If you feel the scene needs a reaction from the user, end your response and wait.`;
+
+// 🛡️ ROLEPLAY GUARD - Strips any text where the model broke character and started writing as the user
+function stripUserBreakout(text) {
+  const lines = text.split('\n');
+  const cleaned = [];
+  let dropping = false;
+
+  // Patterns that signal the model started writing the user's side
+  const userLabels = [
+    /^(User|Human|You|Me|Player)\s*[:：]/i,
+    /^---+\s*$/,
+    /^\*{0,3}\s*(User|Human|You|Me|Player)\s*\*{0,3}\s*[:：]/i
+  ];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Hit a user-label line → start dropping everything after it
+    if (userLabels.some(pattern => pattern.test(trimmed))) {
+      dropping = true;
+      continue;
+    }
+
+    if (dropping) {
+      // Blank lines while dropping → skip
+      if (trimmed === '') continue;
+      // Asterisk = character action resumes, stop dropping
+      if (trimmed.startsWith('*')) {
+        dropping = false;
+        cleaned.push(line);
+      }
+      // Otherwise still dropping invented user dialogue
+      continue;
+    }
+
+    cleaned.push(line);
+  }
+
+  // Final safety net: cut off everything after the last user label
+  // in case one slipped through at the very end
+  const result = cleaned.join('\n');
+  const lastUserLabel = result.search(/\n(?:User|Human|You|Me|Player)\s*[:：]/i);
+  if (lastUserLabel !== -1) {
+    return result.substring(0, lastUserLabel).trimEnd();
+  }
+
+  return result.trimEnd();
+}
 
 // 🎨 THINKING-CAPABLE MODELS (for reasoning mode)
 const THINKING_MODELS = [
@@ -177,6 +233,19 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
+    // 🛡️ ROLEPLAY GUARD - Inject character-only instruction into the system prompt.
+    // If Janitor AI already sent a system message (the character card), we append to it.
+    // If there is no system message at all, we create one.
+    const systemIndex = messages.findIndex(m => m.role === 'system');
+    if (systemIndex !== -1) {
+      messages[systemIndex] = {
+        ...messages[systemIndex],
+        content: messages[systemIndex].content + '\n\n' + RP_GUARD_INSTRUCTION
+      };
+    } else {
+      messages.unshift({ role: 'system', content: RP_GUARD_INSTRUCTION });
+    }
+
     // Transform OpenAI request to NIM format
     const nimRequest = {
       model: nimModel,
@@ -186,7 +255,24 @@ app.post('/v1/chat/completions', async (req, res) => {
       stream: stream || false
     };
 
-    // Thinking mode is disabled - no extra_body or system prompts added
+    // Add thinking mode if enabled and model supports it
+    if (ENABLE_THINKING_MODE && THINKING_MODELS.includes(nimModel)) {
+      // For DeepSeek models, use system prompt method
+      if (nimModel.includes('deepseek')) {
+        // Thinking mode is controlled via chat template
+        nimRequest.extra_body = { thinking: true };
+      } 
+      // For Nemotron models, add system instruction
+      else if (nimModel.includes('nemotron')) {
+        // Check if first message is system, if not add it
+        if (nimRequest.messages[0]?.role !== 'system') {
+          nimRequest.messages.unshift({
+            role: 'system',
+            content: 'detailed thinking on'
+          });
+        }
+      }
+    }
     
     // Make request to NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
@@ -198,12 +284,19 @@ app.post('/v1/chat/completions', async (req, res) => {
     });
     
     if (stream) {
-      // Handle streaming response without reasoning
+      // Handle streaming response with reasoning
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       
       let buffer = '';
+      let reasoningStarted = false;
+      // 🛡️ Accumulates the full streamed text so we can run stripUserBreakout
+      // before forwarding. We hold back the last 200 chars as a "lookahead window"
+      // because a user-label breakout could start at any point and we need context.
+      let contentAccumulator = '';
+      let flushedUpTo = 0;
+      const LOOKAHEAD = 200;
       
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -213,22 +306,73 @@ app.post('/v1/chat/completions', async (req, res) => {
         lines.forEach(line => {
           if (line.startsWith('data: ')) {
             if (line.includes('[DONE]')) {
-              res.write(line + '\n');
+              // Flush any remaining content through the filter before sending DONE
+              if (contentAccumulator.length > flushedUpTo) {
+                const remaining = stripUserBreakout(contentAccumulator.substring(flushedUpTo));
+                if (remaining.length > 0) {
+                  const doneFlush = {
+                    choices: [{ delta: { content: remaining }, index: 0 }]
+                  };
+                  res.write(`data: ${JSON.stringify(doneFlush)}\n\n`);
+                }
+              }
+              res.write(line + '\n\n');
               return;
             }
             
             try {
               const data = JSON.parse(line.slice(6));
               if (data.choices?.[0]?.delta) {
+                const reasoning = data.choices[0].delta.reasoning_content;
                 const content = data.choices[0].delta.content;
                 
-                // Only show content, hide any reasoning
-                if (content) {
-                  data.choices[0].delta.content = content;
+                if (SHOW_REASONING) {
+                  let combinedContent = '';
+                  
+                  if (reasoning && !reasoningStarted) {
+                    combinedContent = '<think>\n' + reasoning;
+                    reasoningStarted = true;
+                  } else if (reasoning) {
+                    combinedContent = reasoning;
+                  }
+                  
+                  if (content && reasoningStarted) {
+                    combinedContent += '\n</think>\n\n' + content;
+                    reasoningStarted = false;
+                  } else if (content) {
+                    combinedContent += content;
+                  }
+                  
+                  if (combinedContent) {
+                    data.choices[0].delta.content = combinedContent;
+                    delete data.choices[0].delta.reasoning_content;
+                  }
                 } else {
-                  data.choices[0].delta.content = '';
+                  if (content) {
+                    data.choices[0].delta.content = content;
+                  } else {
+                    data.choices[0].delta.content = '';
+                  }
+                  delete data.choices[0].delta.reasoning_content;
                 }
-                delete data.choices[0].delta.reasoning_content;
+
+                // 🛡️ Feed into accumulator and only flush the safe portion
+                const chunkText = data.choices[0].delta.content || '';
+                if (chunkText) {
+                  contentAccumulator += chunkText;
+                  // Run filter on everything accumulated so far
+                  const filtered = stripUserBreakout(contentAccumulator);
+                  // Only flush up to (filtered.length - LOOKAHEAD) so we keep a window
+                  const safeEnd = Math.max(flushedUpTo, filtered.length - LOOKAHEAD);
+                  if (safeEnd > flushedUpTo) {
+                    const toSend = filtered.substring(flushedUpTo, safeEnd);
+                    flushedUpTo = safeEnd;
+                    data.choices[0].delta.content = toSend;
+                    res.write(`data: ${JSON.stringify(data)}\n\n`);
+                  }
+                  // If nothing new to flush, don't forward this chunk at all
+                  return;
+                }
               }
               res.write(`data: ${JSON.stringify(data)}\n\n`);
             } catch (e) {
@@ -244,20 +388,31 @@ app.post('/v1/chat/completions', async (req, res) => {
         res.end();
       });
     } else {
-      // Transform NIM response to OpenAI format without reasoning
+      // Transform NIM response to OpenAI format with reasoning
       const openaiResponse = {
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
         model: model,
-        choices: response.data.choices.map(choice => ({
-          index: choice.index,
-          message: {
-            role: choice.message.role,
-            content: choice.message?.content || ''
-          },
-          finish_reason: choice.finish_reason
-        })),
+        choices: response.data.choices.map(choice => {
+          let fullContent = choice.message?.content || '';
+
+          // 🛡️ Strip any text where the model broke character and wrote as the user
+          fullContent = stripUserBreakout(fullContent);
+          
+          if (SHOW_REASONING && choice.message?.reasoning_content) {
+            fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
+          }
+          
+          return {
+            index: choice.index,
+            message: {
+              role: choice.message.role,
+              content: fullContent
+            },
+            finish_reason: choice.finish_reason
+          };
+        }),
         usage: response.data.usage || {
           prompt_tokens: 0,
           completion_tokens: 0,
@@ -311,8 +466,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📋 Models list: http://localhost:${PORT}/v1/models`);
   console.log('');
   console.log('⚙️  Configuration:');
-  console.log(`   • Reasoning display: ❌ DISABLED`);
-  console.log(`   • Thinking mode: ❌ DISABLED`);
+  console.log(`   • Reasoning display: ${SHOW_REASONING ? '✅ ENABLED' : '❌ DISABLED'}`);
+  console.log(`   • Thinking mode: ${ENABLE_THINKING_MODE ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`   • API key: ${NIM_API_KEY ? '✅ Configured' : '❌ Missing'}`);
   console.log('');
   console.log('🎯 Featured Models:');
