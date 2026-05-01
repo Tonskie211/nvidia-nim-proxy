@@ -21,33 +21,39 @@ const SHOW_REASONING = process.env.SHOW_REASONING === 'true' || false;
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = process.env.ENABLE_THINKING_MODE === 'true' || false;
 
-// 🎯 OPTIMIZED MODEL MAPPING FOR JANITOR AI
-// Best models from NVIDIA NIM API (January 2025)
+// 🎯 MODEL MAPPING — verified against build.nvidia.com/models (May 2025)
 const MODEL_MAPPING = {
-  // Premium Reasoning Models (Best for Roleplay & Complex Conversations)
-  'gpt-4': 'deepseek-ai/deepseek-v3.2',                                    // State-of-the-art 685B reasoning LLM
-  'gpt-4-turbo': 'deepseek-ai/deepseek-v3.1',                              // Hybrid thinking mode, 128K context
-  'gpt-4o': 'deepseek-ai/deepseek-v3.1-terminus',                          // Improved stability & agent behavior
-  'claude-opus': 'nvidia/llama-3.1-nemotron-ultra-253b-v1',                // Highest accuracy, complex reasoning
-  'claude-sonnet': 'nvidia/llama-3.3-nemotron-super-49b-v1.5',             // Great accuracy-efficiency balance
-  
-  // Fast & Efficient Models (Balanced Performance)
-  'gpt-3.5-turbo': 'nvidia/llama-3.1-nemotron-nano-8b-v1',                 // Fast, efficient, good quality
-  'gpt-3.5-turbo-16k': 'nvidia/nvidia-nemotron-nano-9b-v2',                // Hybrid Mamba-Transformer, 128K context
-  'claude-haiku': 'nvidia/nemotron-3-nano-30b-a3b',                        // Best-in-class throughput, 1M tokens
-  
-  // Specialized Models
-  'gemini-pro': 'qwen/qwen3-next-80b-a3b-thinking',                        // Hybrid attention, ultra-long context
-  'gemini-pro-vision': 'nvidia/nemotron-nano-12b-v2-vl',                   // Multi-image, video understanding
-  
-  // Alternative Premium Options
-  'gpt-4-reasoning': 'moonshotai/kimi-k2-instruct-1113',                   // Long context, enhanced reasoning
-  'deepseek': 'deepseek-ai/deepseek-v3.1',                                 // Direct DeepSeek access
-  
-  // Fallback Models (Meta Llama)
-  'llama-70b': 'meta/llama-3.1-70b-instruct',
-  'llama-405b': 'meta/llama-3.1-405b-instruct',
-  'llama-8b': 'meta/llama-3.1-8b-instruct'
+  // --- DeepSeek (confirmed live on NIM) ---
+  'deepseek-v4-pro':   'deepseek-ai/deepseek-v4-pro',    // 1M ctx, flagship MoE
+  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4-flash',  // 1M ctx, fast 284B MoE
+  'gpt-4':             'deepseek-ai/deepseek-v4-pro',
+  'gpt-4o':            'deepseek-ai/deepseek-v4-flash',
+
+  // --- NVIDIA Nemotron ---
+  'gpt-3.5-turbo':  'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+  'gpt-4o-mini':    'nvidia/nemotron-3-super-120b-a12b',
+
+  // --- Qwen ---
+  'gpt-4-faster':  'qwen/qwen3.5-122b-a10b',
+
+  // --- Mistral (free endpoints) ---
+  'mistral-medium':  'mistralai/mistral-medium-3.5-128b',
+  'mistral-small':   'mistralai/mistral-small-4-119b-2603',
+  'gemini-pro':      'mistralai/mistral-medium-3.5-128b',
+
+  // --- GLM (Z.ai, free endpoint) ---
+  'glm-fast':   'z-ai/glm-4.7',
+  'glm-pro':    'z-ai/glm-5.1',
+
+  // --- MiniMax (free endpoint) ---
+  'minimax':    'minimaxai/minimax-m2.7',
+
+  // --- Google ---
+  'gemma':      'google/gemma-4-31b-it',
+
+  // --- OpenAI OSS (via NIM) ---
+  'claude-3-opus':   'openai/gpt-oss-120b',
+  'claude-3-sonnet': 'openai/gpt-oss-20b',
 };
 
 // 🛡️ ROLEPLAY GUARD - Injected into every request to prevent the model from speaking as the user
@@ -64,7 +70,6 @@ function stripUserBreakout(text) {
   const cleaned = [];
   let dropping = false;
 
-  // Patterns that signal the model started writing the user's side
   const userLabels = [
     /^(User|Human|You|Me|Player)\s*[:：]/i,
     /^---+\s*$/,
@@ -74,29 +79,23 @@ function stripUserBreakout(text) {
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Hit a user-label line → start dropping everything after it
     if (userLabels.some(pattern => pattern.test(trimmed))) {
       dropping = true;
       continue;
     }
 
     if (dropping) {
-      // Blank lines while dropping → skip
       if (trimmed === '') continue;
-      // Asterisk = character action resumes, stop dropping
       if (trimmed.startsWith('*')) {
         dropping = false;
         cleaned.push(line);
       }
-      // Otherwise still dropping invented user dialogue
       continue;
     }
 
     cleaned.push(line);
   }
 
-  // Final safety net: cut off everything after the last user label
-  // in case one slipped through at the very end
   const result = cleaned.join('\n');
   const lastUserLabel = result.search(/\n(?:User|Human|You|Me|Player)\s*[:：]/i);
   if (lastUserLabel !== -1) {
@@ -106,17 +105,17 @@ function stripUserBreakout(text) {
   return result.trimEnd();
 }
 
-// 🎨 THINKING-CAPABLE MODELS (for reasoning mode)
+// 🎨 THINKING-CAPABLE MODELS
 const THINKING_MODELS = [
-  'deepseek-ai/deepseek-v3.2',
-  'deepseek-ai/deepseek-v3.1',
-  'deepseek-ai/deepseek-v3.1-terminus',
-  'qwen/qwen3-next-80b-a3b-thinking',
+  'deepseek-ai/deepseek-v4-pro',
+  'deepseek-ai/deepseek-v4-flash',
   'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-  'nvidia/llama-3.3-nemotron-super-49b-v1.5',
-  'nvidia/llama-3.1-nemotron-nano-8b-v1',
-  'nvidia/nvidia-nemotron-nano-9b-v2',
-  'nvidia/nemotron-3-nano-30b-a3b'
+  'nvidia/nemotron-3-super-120b-a12b',
+  'qwen/qwen3.5-122b-a10b',
+  'mistralai/mistral-medium-3.5-128b',
+  'mistralai/mistral-small-4-119b-2603',
+  'z-ai/glm-5.1',
+  'minimaxai/minimax-m2.7',
 ];
 
 // Health check endpoint
@@ -145,9 +144,9 @@ app.get('/', (req, res) => {
       chat: '/v1/chat/completions'
     },
     featured_models: {
-      best_quality: 'gpt-4 → deepseek-v3.2 (685B params)',
-      balanced: 'claude-sonnet → llama-3.3-nemotron-super (49B)',
-      fastest: 'gpt-3.5-turbo → llama-3.1-nemotron-nano (8B)'
+      best_quality: 'gpt-4 → deepseek-v4-pro (1M ctx)',
+      balanced: 'gpt-4o → deepseek-v4-flash (fast MoE)',
+      fastest: 'mistral-medium → mistral-medium-3.5 (free)'
     }
   });
 });
@@ -172,7 +171,6 @@ app.get('/v1/models', (req, res) => {
 // Chat completions endpoint (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    // Check API key
     if (!NIM_API_KEY) {
       return res.status(500).json({
         error: {
@@ -185,13 +183,10 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
-    // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
     
-    // If exact model not found, try intelligent fallback
     if (!nimModel) {
       try {
-        // Test if the requested model exists directly on NVIDIA NIM
         await axios.post(`${NIM_API_BASE}/chat/completions`, {
           model: model,
           messages: [{ role: 'user', content: 'test' }],
@@ -211,31 +206,19 @@ app.post('/v1/chat/completions', async (req, res) => {
         // Will use fallback below
       }
       
-      // Intelligent fallback based on model name patterns
       if (!nimModel) {
         const modelLower = model.toLowerCase();
-        
-        // Match patterns for best model selection
-        if (modelLower.includes('gpt-4') || modelLower.includes('opus')) {
-          nimModel = 'deepseek-ai/deepseek-v3.2'; // Best quality
-        } else if (modelLower.includes('deepseek')) {
-          nimModel = 'deepseek-ai/deepseek-v3.1';
-        } else if (modelLower.includes('claude-sonnet') || modelLower.includes('70b')) {
-          nimModel = 'nvidia/llama-3.3-nemotron-super-49b-v1.5'; // Balanced
-        } else if (modelLower.includes('3.5') || modelLower.includes('haiku') || modelLower.includes('fast')) {
-          nimModel = 'nvidia/llama-3.1-nemotron-nano-8b-v1'; // Fast
-        } else if (modelLower.includes('gemini') || modelLower.includes('qwen')) {
-          nimModel = 'qwen/qwen3-next-80b-a3b-thinking';
+        if (modelLower.includes('gpt-4') || modelLower.includes('opus') || modelLower.includes('405b')) {
+          nimModel = 'deepseek-ai/deepseek-v4-pro';
+        } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b')) {
+          nimModel = 'deepseek-ai/deepseek-v4-flash';
         } else {
-          // Default to balanced model for Janitor AI
-          nimModel = 'nvidia/llama-3.3-nemotron-super-49b-v1.5';
+          nimModel = 'mistralai/mistral-medium-3.5-128b'; // Free endpoint default
         }
       }
     }
     
-    // 🛡️ ROLEPLAY GUARD - Inject character-only instruction into the system prompt.
-    // If Janitor AI already sent a system message (the character card), we append to it.
-    // If there is no system message at all, we create one.
+    // 🛡️ ROLEPLAY GUARD - Inject character-only instruction
     const systemIndex = messages.findIndex(m => m.role === 'system');
     if (systemIndex !== -1) {
       messages[systemIndex] = {
@@ -246,25 +229,18 @@ app.post('/v1/chat/completions', async (req, res) => {
       messages.unshift({ role: 'system', content: RP_GUARD_INSTRUCTION });
     }
 
-    // Transform OpenAI request to NIM format
     const nimRequest = {
       model: nimModel,
       messages: messages,
-      temperature: temperature || 0.7, // Optimized for roleplay
-      max_tokens: max_tokens || 4096,  // Good balance for conversations
+      temperature: temperature || 0.7,
+      max_tokens: max_tokens || 4096,
       stream: stream || false
     };
 
-    // Add thinking mode if enabled and model supports it
     if (ENABLE_THINKING_MODE && THINKING_MODELS.includes(nimModel)) {
-      // For DeepSeek models, use system prompt method
       if (nimModel.includes('deepseek')) {
-        // Thinking mode is controlled via chat template
         nimRequest.extra_body = { thinking: true };
-      } 
-      // For Nemotron models, add system instruction
-      else if (nimModel.includes('nemotron')) {
-        // Check if first message is system, if not add it
+      } else if (nimModel.includes('nemotron')) {
         if (nimRequest.messages[0]?.role !== 'system') {
           nimRequest.messages.unshift({
             role: 'system',
@@ -274,7 +250,6 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
-    // Make request to NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
         'Authorization': `Bearer ${NIM_API_KEY}`,
@@ -284,16 +259,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     });
     
     if (stream) {
-      // Handle streaming response with reasoning
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
       
       let buffer = '';
       let reasoningStarted = false;
-      // 🛡️ Accumulates the full streamed text so we can run stripUserBreakout
-      // before forwarding. We hold back the last 200 chars as a "lookahead window"
-      // because a user-label breakout could start at any point and we need context.
       let contentAccumulator = '';
       let flushedUpTo = 0;
       const LOOKAHEAD = 200;
@@ -306,7 +277,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         lines.forEach(line => {
           if (line.startsWith('data: ')) {
             if (line.includes('[DONE]')) {
-              // Flush any remaining content through the filter before sending DONE
               if (contentAccumulator.length > flushedUpTo) {
                 const remaining = stripUserBreakout(contentAccumulator.substring(flushedUpTo));
                 if (remaining.length > 0) {
@@ -356,13 +326,10 @@ app.post('/v1/chat/completions', async (req, res) => {
                   delete data.choices[0].delta.reasoning_content;
                 }
 
-                // 🛡️ Feed into accumulator and only flush the safe portion
                 const chunkText = data.choices[0].delta.content || '';
                 if (chunkText) {
                   contentAccumulator += chunkText;
-                  // Run filter on everything accumulated so far
                   const filtered = stripUserBreakout(contentAccumulator);
-                  // Only flush up to (filtered.length - LOOKAHEAD) so we keep a window
                   const safeEnd = Math.max(flushedUpTo, filtered.length - LOOKAHEAD);
                   if (safeEnd > flushedUpTo) {
                     const toSend = filtered.substring(flushedUpTo, safeEnd);
@@ -370,7 +337,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                     data.choices[0].delta.content = toSend;
                     res.write(`data: ${JSON.stringify(data)}\n\n`);
                   }
-                  // If nothing new to flush, don't forward this chunk at all
                   return;
                 }
               }
@@ -388,7 +354,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         res.end();
       });
     } else {
-      // Transform NIM response to OpenAI format with reasoning
       const openaiResponse = {
         id: `chatcmpl-${Date.now()}`,
         object: 'chat.completion',
@@ -397,7 +362,6 @@ app.post('/v1/chat/completions', async (req, res) => {
         choices: response.data.choices.map(choice => {
           let fullContent = choice.message?.content || '';
 
-          // 🛡️ Strip any text where the model broke character and wrote as the user
           fullContent = stripUserBreakout(fullContent);
           
           if (SHOW_REASONING && choice.message?.reasoning_content) {
@@ -426,7 +390,6 @@ app.post('/v1/chat/completions', async (req, res) => {
   } catch (error) {
     console.error('Proxy error:', error.message);
     
-    // Enhanced error messages
     let errorMessage = error.message || 'Internal server error';
     if (error.response?.status === 401) {
       errorMessage = 'Invalid NVIDIA API key. Please check your NIM_API_KEY in environment variables.';
@@ -471,8 +434,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   • API key: ${NIM_API_KEY ? '✅ Configured' : '❌ Missing'}`);
   console.log('');
   console.log('🎯 Featured Models:');
-  console.log('   • Best Quality: gpt-4 → DeepSeek V3.2 (685B)');
-  console.log('   • Balanced: claude-sonnet → Llama Nemotron Super (49B)');
-  console.log('   • Fastest: gpt-3.5-turbo → Llama Nemotron Nano (8B)');
+  console.log('   • Best Quality: gpt-4 → DeepSeek V4 Pro (1M ctx)');
+  console.log('   • Balanced: gpt-4o → DeepSeek V4 Flash (fast MoE)');
+  console.log('   • Fastest: mistral-medium → Mistral Medium 3.5 (free)');
   console.log('═══════════════════════════════════════════════════════');
 });
