@@ -21,7 +21,7 @@ const SHOW_REASONING = process.env.SHOW_REASONING === 'true' || false;
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = process.env.ENABLE_THINKING_MODE === 'true' || false;
 
-// 🎯 MODEL MAPPING — verified against build.nvidia.com/models (May 2025)
+// 🎯 MODEL MAPPING — verified against build.nvidia.com/models (July 2025)
 const MODEL_MAPPING = {
   // --- DeepSeek (confirmed live on NIM) ---
   'deepseek-v4-pro':   'deepseek-ai/deepseek-v4-pro',    // 1M ctx, flagship MoE
@@ -30,7 +30,7 @@ const MODEL_MAPPING = {
   'gpt-4o':            'deepseek-ai/deepseek-v4-flash',
 
   // --- NVIDIA Nemotron ---
-  'gpt-3.5-turbo':  'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+  'gpt-3.5-turbo':  'nvidia/nemotron-3-ultra-550b-a55b',  // New! 550B hybrid MoE, 1M ctx
   'gpt-4o-mini':    'nvidia/nemotron-3-super-120b-a12b',
 
   // --- Qwen ---
@@ -42,11 +42,16 @@ const MODEL_MAPPING = {
   'gemini-pro':      'mistralai/mistral-medium-3.5-128b',
 
   // --- GLM (Z.ai, free endpoint) ---
-  'glm-fast':   'z-ai/glm-4.7',
-  'glm-pro':    'z-ai/glm-5.2',
+  'glm-pro':    'z-ai/glm-5.2',   // New! Flagship agentic LLM, replaces 5.1 & 4.7
 
   // --- MiniMax (free endpoint) ---
-  'minimax':    'minimaxai/minimax-m2.7',
+  'minimax':    'minimaxai/minimax-m3',   // New! Replaces m2.7, multimodal MoE
+
+  // --- Kimi (Moonshot AI) ---
+  'kimi':       'moonshotai/kimi-k2.6',  // New! 1T MoE, long-horizon, tool use
+
+  // --- Step (StepFun AI, free endpoint) ---
+  'step-flash': 'stepfun-ai/step-3.7-flash',  // New! Sparse MoE, fast reasoning
 
   // --- Google ---
   'gemma':      'google/gemma-4-31b-it',
@@ -55,6 +60,16 @@ const MODEL_MAPPING = {
   'claude-3-opus':   'openai/gpt-oss-120b',
   'claude-3-sonnet': 'openai/gpt-oss-20b',
 };
+
+// 🔄 FALLBACK CHAIN - When primary model hits 429, try these in order
+const FALLBACK_CHAIN = [
+  'deepseek-ai/deepseek-v4-flash',
+  'mistralai/mistral-medium-3.5-128b',
+  'mistralai/mistral-small-4-119b-2603',
+  'z-ai/glm-5.2',
+  'minimaxai/minimax-m3',
+  'stepfun-ai/step-3.7-flash',
+];
 
 // 🛡️ ROLEPLAY GUARD - Injected into every request to prevent the model from speaking as the user
 const RP_GUARD_INSTRUCTION = `You are ONLY the character described in the system prompt or conversation. Follow these rules strictly:
@@ -109,14 +124,55 @@ function stripUserBreakout(text) {
 const THINKING_MODELS = [
   'deepseek-ai/deepseek-v4-pro',
   'deepseek-ai/deepseek-v4-flash',
-  'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+  'nvidia/nemotron-3-ultra-550b-a55b',
   'nvidia/nemotron-3-super-120b-a12b',
   'qwen/qwen3.5-122b-a10b',
   'mistralai/mistral-medium-3.5-128b',
   'mistralai/mistral-small-4-119b-2603',
   'z-ai/glm-5.2',
-  'minimaxai/minimax-m2.7',
+  'minimaxai/minimax-m3',
+  'moonshotai/kimi-k2.6',
+  'stepfun-ai/step-3.7-flash',
 ];
+
+// 🔄 Helper: make a NIM request with automatic 429 fallback
+async function makeNimRequest(nimRequest, stream) {
+  const modelsToTry = [nimRequest.model, ...FALLBACK_CHAIN.filter(m => m !== nimRequest.model)];
+
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const modelAttempt = modelsToTry[i];
+    try {
+      const response = await axios.post(`${NIM_API_BASE}/chat/completions`, {
+        ...nimRequest,
+        model: modelAttempt
+      }, {
+        headers: {
+          'Authorization': `Bearer ${NIM_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        responseType: stream ? 'stream' : 'json'
+      });
+
+      response._usedModel = modelAttempt;
+      if (modelAttempt !== nimRequest.model) {
+        console.log(`✅ Fell back to: ${modelAttempt}`);
+      }
+      return response;
+
+    } catch (err) {
+      const status = err.response?.status;
+      const isLast = i === modelsToTry.length - 1;
+
+      if (status === 429) {
+        console.warn(`⚠️  429 on ${modelAttempt} — ${isLast ? 'all fallbacks exhausted' : `trying ${modelsToTry[i + 1]}`}`);
+        if (isLast) throw err;
+        continue;
+      }
+
+      throw err;
+    }
+  }
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -135,7 +191,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'OpenAI to NVIDIA NIM Proxy',
-    version: '2.0',
+    version: '2.2',
     optimized_for: 'Janitor AI',
     status: 'running',
     endpoints: {
@@ -146,7 +202,8 @@ app.get('/', (req, res) => {
     featured_models: {
       best_quality: 'gpt-4 → deepseek-v4-pro (1M ctx)',
       balanced: 'gpt-4o → deepseek-v4-flash (fast MoE)',
-      fastest: 'mistral-medium → mistral-medium-3.5 (free)'
+      free_flagship: 'glm-pro → glm-5.2 (latest Z.ai)',
+      newest: 'kimi → kimi-k2.6 (1T MoE)'
     }
   });
 });
@@ -213,7 +270,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b')) {
           nimModel = 'deepseek-ai/deepseek-v4-flash';
         } else {
-          nimModel = 'mistralai/mistral-medium-3.5-128b'; // Free endpoint default
+          nimModel = 'mistralai/mistral-medium-3.5-128b';
         }
       }
     }
@@ -250,13 +307,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
-      headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      responseType: stream ? 'stream' : 'json'
-    });
+    // 🔄 Use fallback-aware request helper
+    const response = await makeNimRequest(nimRequest, stream || false);
     
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -394,7 +446,8 @@ app.post('/v1/chat/completions', async (req, res) => {
     if (error.response?.status === 401) {
       errorMessage = 'Invalid NVIDIA API key. Please check your NIM_API_KEY in environment variables.';
     } else if (error.response?.status === 429) {
-      errorMessage = 'Rate limit exceeded. Please try again in a moment.';
+      errorMessage = 'All models are currently rate limited. Please wait 60 seconds and try again.';
+      res.setHeader('Retry-After', error.response?.headers?.['retry-after'] || 60);
     } else if (error.response?.data?.detail) {
       errorMessage = error.response.data.detail;
     }
@@ -432,10 +485,16 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   • Reasoning display: ${SHOW_REASONING ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`   • Thinking mode: ${ENABLE_THINKING_MODE ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`   • API key: ${NIM_API_KEY ? '✅ Configured' : '❌ Missing'}`);
+  console.log(`   • Max tokens: 12000`);
+  console.log(`   • 429 fallback chain: ${FALLBACK_CHAIN.length} models`);
   console.log('');
   console.log('🎯 Featured Models:');
-  console.log('   • Best Quality: gpt-4 → DeepSeek V4 Pro (1M ctx)');
-  console.log('   • Balanced: gpt-4o → DeepSeek V4 Flash (fast MoE)');
-  console.log('   • Fastest: mistral-medium → Mistral Medium 3.5 (free)');
+  console.log('   • Best Quality : gpt-4       → DeepSeek V4 Pro (1M ctx)');
+  console.log('   • Balanced     : gpt-4o      → DeepSeek V4 Flash (fast MoE)');
+  console.log('   • Free Latest  : glm-pro     → GLM-5.2 (Z.ai flagship)');
+  console.log('   • Newest       : kimi        → Kimi K2.6 (1T MoE)');
+  console.log('   • Fast Free    : step-flash  → Step-3.7 Flash');
+  console.log('🔄 Fallback Chain (on 429):');
+  FALLBACK_CHAIN.forEach((m, i) => console.log(`   ${i + 1}. ${m}`));
   console.log('═══════════════════════════════════════════════════════');
 });
