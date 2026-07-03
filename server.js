@@ -43,7 +43,7 @@ const MODEL_MAPPING = {
 
   // --- GLM (Z.ai, free endpoint) ---
   'glm-fast':   'z-ai/glm-4.7',
-  'glm-pro':    'z-ai/glm-5.1',
+  'glm-pro':    'z-ai/glm-5.2',
 
   // --- MiniMax (free endpoint) ---
   'minimax':    'minimaxai/minimax-m2.7',
@@ -114,7 +114,7 @@ const THINKING_MODELS = [
   'qwen/qwen3.5-122b-a10b',
   'mistralai/mistral-medium-3.5-128b',
   'mistralai/mistral-small-4-119b-2603',
-  'z-ai/glm-5.1',
+  'z-ai/glm-5.2',
   'minimaxai/minimax-m2.7',
 ];
 
