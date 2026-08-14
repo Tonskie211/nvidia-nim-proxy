@@ -21,54 +21,55 @@ const SHOW_REASONING = process.env.SHOW_REASONING === 'true' || false;
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
 const ENABLE_THINKING_MODE = process.env.ENABLE_THINKING_MODE === 'true' || false;
 
-// 🎯 MODEL MAPPING — verified against build.nvidia.com/models (July 2025)
+// 🎯 MODEL MAPPING — verified against build.nvidia.com/models (August 2026)
+// ⚠️ deepseek-v4-flash removed — deprecated, replaced by flash-0731 (not yet on NIM)
 const MODEL_MAPPING = {
-  // --- DeepSeek (confirmed live on NIM) ---
-  'deepseek-v4-pro':   'deepseek-ai/deepseek-v4-pro',    // 1M ctx, flagship MoE
-  'deepseek-v4-flash': 'deepseek-ai/deepseek-v4-flash',  // 1M ctx, fast 284B MoE
+  // --- DeepSeek ---
+  'deepseek-v4-pro':   'deepseek-ai/deepseek-v4-pro',         // Flagship, 1M ctx
   'gpt-4':             'deepseek-ai/deepseek-v4-pro',
-  'gpt-4o':            'deepseek-ai/deepseek-v4-flash',
 
-  // --- NVIDIA Nemotron ---
-  'gpt-3.5-turbo':  'nvidia/nemotron-3-ultra-550b-a55b',  // New! 550B hybrid MoE, 1M ctx
-  'gpt-4o-mini':    'nvidia/nemotron-3-super-120b-a12b',
+  // --- NVIDIA Nemotron (confirmed live, top usage) ---
+  'gpt-3.5-turbo':     'nvidia/nemotron-3-ultra-550b-a55b',   // 550B MoE, 52M calls/mo, 1M ctx
+  'gpt-4o-mini':       'nvidia/nemotron-3.5-lightning-30b-a3b', // NEW Aug 11! Fastest 30B MoE
+  'nemotron-ultra':    'nvidia/nemotron-3-ultra-550b-a55b',
+  'nemotron-lightning':'nvidia/nemotron-3.5-lightning-30b-a3b',
 
-  // --- Qwen ---
-  'gpt-4-faster':  'qwen/qwen3.5-122b-a10b',
+  // --- GLM (Z.ai, confirmed live) ---
+  'glm-pro':           'z-ai/glm-5.2',                        // 8M calls/mo, confirmed ✅
 
-  // --- Mistral (free endpoints) ---
-  'mistral-medium':  'mistralai/mistral-medium-3.5-128b',
-  'mistral-small':   'mistralai/mistral-small-4-119b-2603',
-  'gemini-pro':      'mistralai/mistral-medium-3.5-128b',
+  // --- MiniMax (confirmed live) ---
+  'minimax':           'minimaxai/minimax-m3',                 // 10M calls/mo, confirmed ✅
+  'gpt-4o':            'minimaxai/minimax-m3',                 // Replaces deepseek-flash slot
 
-  // --- GLM (Z.ai, free endpoint) ---
-  'glm-pro':    'z-ai/glm-5.2',   // New! Flagship agentic LLM, replaces 5.1 & 4.7
+  // --- Step (confirmed live) ---
+  'step-flash':        'stepfun-ai/step-3.7-flash',           // 7M calls/mo, confirmed ✅
+  'gpt-4-faster':      'stepfun-ai/step-3.7-flash',
 
-  // --- MiniMax (free endpoint) ---
-  'minimax':    'minimaxai/minimax-m3',   // New! Replaces m2.7, multimodal MoE
+  // --- Inkling (Thinking Machines, confirmed live) ---
+  'inkling':           'thinkingmachines/inkling',             // Mamba-hybrid MoE, multimodal
 
-  // --- Kimi (Moonshot AI) ---
-  'kimi':       'moonshotai/kimi-k2.6',  // New! 1T MoE, long-horizon, tool use
+  // --- Google DiffusionGemma (confirmed live) ---
+  'gemma':             'google/diffusiongemma-26b-a4b-it',     // 4M calls/mo, parallel generation
 
-  // --- Step (StepFun AI, free endpoint) ---
-  'step-flash': 'stepfun-ai/step-3.7-flash',  // New! Sparse MoE, fast reasoning
-
-  // --- Google ---
-  'gemma':      'google/gemma-4-31b-it',
+  // --- Mistral (may still be active) ---
+  'mistral-medium':    'mistralai/mistral-medium-3.5-128b',
+  'mistral-small':     'mistralai/mistral-small-4-119b-2603',
+  'gemini-pro':        'mistralai/mistral-medium-3.5-128b',
 
   // --- OpenAI OSS (via NIM) ---
-  'claude-3-opus':   'openai/gpt-oss-120b',
-  'claude-3-sonnet': 'openai/gpt-oss-20b',
+  'claude-3-opus':     'openai/gpt-oss-120b',
+  'claude-3-sonnet':   'openai/gpt-oss-20b',
 };
 
-// 🔄 FALLBACK CHAIN - When primary model hits 429, try these in order
+// 🔄 FALLBACK CHAIN — ordered by confirmed usage & reliability (August 2026)
+// deepseek-flash removed since it's deprecated
 const FALLBACK_CHAIN = [
-  'deepseek-ai/deepseek-v4-flash',
-  'mistralai/mistral-medium-3.5-128b',
-  'mistralai/mistral-small-4-119b-2603',
-  'z-ai/glm-5.2',
-  'minimaxai/minimax-m3',
-  'stepfun-ai/step-3.7-flash',
+  'minimaxai/minimax-m3',              // 10M calls/mo — most reliable free model
+  'z-ai/glm-5.2',                      // 8M calls/mo — confirmed working
+  'nvidia/nemotron-3-ultra-550b-a55b', // 52M calls/mo — highest usage on NIM
+  'stepfun-ai/step-3.7-flash',         // 7M calls/mo — fast fallback
+  'nvidia/nemotron-3.5-lightning-30b-a3b', // Newest, fastest
+  'thinkingmachines/inkling',          // Last resort
 ];
 
 // 🛡️ ROLEPLAY GUARD - Injected into every request to prevent the model from speaking as the user
@@ -93,12 +94,10 @@ function stripUserBreakout(text) {
 
   for (const line of lines) {
     const trimmed = line.trim();
-
     if (userLabels.some(pattern => pattern.test(trimmed))) {
       dropping = true;
       continue;
     }
-
     if (dropping) {
       if (trimmed === '') continue;
       if (trimmed.startsWith('*')) {
@@ -107,7 +106,6 @@ function stripUserBreakout(text) {
       }
       continue;
     }
-
     cleaned.push(line);
   }
 
@@ -116,26 +114,23 @@ function stripUserBreakout(text) {
   if (lastUserLabel !== -1) {
     return result.substring(0, lastUserLabel).trimEnd();
   }
-
   return result.trimEnd();
 }
 
 // 🎨 THINKING-CAPABLE MODELS
 const THINKING_MODELS = [
   'deepseek-ai/deepseek-v4-pro',
-  'deepseek-ai/deepseek-v4-flash',
   'nvidia/nemotron-3-ultra-550b-a55b',
-  'nvidia/nemotron-3-super-120b-a12b',
-  'qwen/qwen3.5-122b-a10b',
-  'mistralai/mistral-medium-3.5-128b',
-  'mistralai/mistral-small-4-119b-2603',
+  'nvidia/nemotron-3.5-lightning-30b-a3b',
   'z-ai/glm-5.2',
   'minimaxai/minimax-m3',
-  'moonshotai/kimi-k2.6',
   'stepfun-ai/step-3.7-flash',
+  'thinkingmachines/inkling',
+  'mistralai/mistral-medium-3.5-128b',
+  'mistralai/mistral-small-4-119b-2603',
 ];
 
-// 🔄 Helper: make a NIM request with automatic 429 fallback
+// 🔄 Helper: make a NIM request with automatic 429 + 503 fallback
 async function makeNimRequest(nimRequest, stream) {
   const modelsToTry = [nimRequest.model, ...FALLBACK_CHAIN.filter(m => m !== nimRequest.model)];
 
@@ -163,8 +158,9 @@ async function makeNimRequest(nimRequest, stream) {
       const status = err.response?.status;
       const isLast = i === modelsToTry.length - 1;
 
-      if (status === 429) {
-        console.warn(`⚠️  429 on ${modelAttempt} — ${isLast ? 'all fallbacks exhausted' : `trying ${modelsToTry[i + 1]}`}`);
+      // Catch 429 (rate limit), 503 (resource full/overloaded), 410 (gone/deprecated)
+      if (status === 429 || status === 503 || status === 410) {
+        console.warn(`⚠️  ${status} on ${modelAttempt} — ${isLast ? 'all fallbacks exhausted' : `trying ${modelsToTry[i + 1]}`}`);
         if (isLast) throw err;
         continue;
       }
@@ -183,7 +179,8 @@ app.get('/health', (req, res) => {
     thinking_mode: ENABLE_THINKING_MODE,
     nim_api_configured: !!NIM_API_KEY,
     available_models: Object.keys(MODEL_MAPPING).length,
-    optimized_for: 'Janitor AI'
+    optimized_for: 'Janitor AI',
+    last_updated: 'August 2026'
   });
 });
 
@@ -191,7 +188,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'OpenAI to NVIDIA NIM Proxy',
-    version: '2.2',
+    version: '2.3',
     optimized_for: 'Janitor AI',
     status: 'running',
     endpoints: {
@@ -200,10 +197,11 @@ app.get('/', (req, res) => {
       chat: '/v1/chat/completions'
     },
     featured_models: {
-      best_quality: 'gpt-4 → deepseek-v4-pro (1M ctx)',
-      balanced: 'gpt-4o → deepseek-v4-flash (fast MoE)',
-      free_flagship: 'glm-pro → glm-5.2 (latest Z.ai)',
-      newest: 'kimi → kimi-k2.6 (1T MoE)'
+      best_quality:   'gpt-4 → deepseek-v4-pro (1M ctx)',
+      best_free:      'minimax → minimax-m3 (10M calls/mo)',
+      most_popular:   'gpt-3.5-turbo → nemotron-ultra-550b (52M calls/mo)',
+      newest:         'gpt-4o-mini → nemotron-lightning-30b (Aug 2026)',
+      confirmed_rp:   'glm-pro → glm-5.2 | minimax → minimax-m3'
     }
   });
 });
@@ -268,9 +266,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         if (modelLower.includes('gpt-4') || modelLower.includes('opus') || modelLower.includes('405b')) {
           nimModel = 'deepseek-ai/deepseek-v4-pro';
         } else if (modelLower.includes('claude') || modelLower.includes('gemini') || modelLower.includes('70b')) {
-          nimModel = 'deepseek-ai/deepseek-v4-flash';
+          nimModel = 'minimaxai/minimax-m3';
         } else {
-          nimModel = 'mistralai/mistral-medium-3.5-128b';
+          nimModel = 'z-ai/glm-5.2'; // Most reliable confirmed free model
         }
       }
     }
@@ -350,21 +348,18 @@ app.post('/v1/chat/completions', async (req, res) => {
                 
                 if (SHOW_REASONING) {
                   let combinedContent = '';
-                  
                   if (reasoning && !reasoningStarted) {
                     combinedContent = '<think>\n' + reasoning;
                     reasoningStarted = true;
                   } else if (reasoning) {
                     combinedContent = reasoning;
                   }
-                  
                   if (content && reasoningStarted) {
                     combinedContent += '\n</think>\n\n' + content;
                     reasoningStarted = false;
                   } else if (content) {
                     combinedContent += content;
                   }
-                  
                   if (combinedContent) {
                     data.choices[0].delta.content = combinedContent;
                     delete data.choices[0].delta.reasoning_content;
@@ -413,13 +408,10 @@ app.post('/v1/chat/completions', async (req, res) => {
         model: model,
         choices: response.data.choices.map(choice => {
           let fullContent = choice.message?.content || '';
-
           fullContent = stripUserBreakout(fullContent);
-          
           if (SHOW_REASONING && choice.message?.reasoning_content) {
             fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
           }
-          
           return {
             index: choice.index,
             message: {
@@ -435,7 +427,6 @@ app.post('/v1/chat/completions', async (req, res) => {
           total_tokens: 0
         }
       };
-      
       res.json(openaiResponse);
     }
     
@@ -446,8 +437,12 @@ app.post('/v1/chat/completions', async (req, res) => {
     if (error.response?.status === 401) {
       errorMessage = 'Invalid NVIDIA API key. Please check your NIM_API_KEY in environment variables.';
     } else if (error.response?.status === 429) {
-      errorMessage = 'All models are currently rate limited. Please wait 60 seconds and try again.';
+      errorMessage = 'All models are rate limited. Please wait 60 seconds and try again.';
       res.setHeader('Retry-After', error.response?.headers?.['retry-after'] || 60);
+    } else if (error.response?.status === 503) {
+      errorMessage = 'NIM servers are overloaded. All fallback models also full. Please try again shortly.';
+    } else if (error.response?.status === 410) {
+      errorMessage = 'Model is no longer available on NIM. Please try a different model.';
     } else if (error.response?.data?.detail) {
       errorMessage = error.response.data.detail;
     }
@@ -483,18 +478,21 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('⚙️  Configuration:');
   console.log(`   • Reasoning display: ${SHOW_REASONING ? '✅ ENABLED' : '❌ DISABLED'}`);
-  console.log(`   • Thinking mode: ${ENABLE_THINKING_MODE ? '✅ ENABLED' : '❌ DISABLED'}`);
-  console.log(`   • API key: ${NIM_API_KEY ? '✅ Configured' : '❌ Missing'}`);
-  console.log(`   • Max tokens: 12000`);
-  console.log(`   • 429 fallback chain: ${FALLBACK_CHAIN.length} models`);
+  console.log(`   • Thinking mode:     ${ENABLE_THINKING_MODE ? '✅ ENABLED' : '❌ DISABLED'}`);
+  console.log(`   • API key:           ${NIM_API_KEY ? '✅ Configured' : '❌ Missing'}`);
+  console.log(`   • Max tokens:        12000`);
+  console.log(`   • Fallback triggers: 429, 503, 410`);
   console.log('');
-  console.log('🎯 Featured Models:');
-  console.log('   • Best Quality : gpt-4       → DeepSeek V4 Pro (1M ctx)');
-  console.log('   • Balanced     : gpt-4o      → DeepSeek V4 Flash (fast MoE)');
-  console.log('   • Free Latest  : glm-pro     → GLM-5.2 (Z.ai flagship)');
-  console.log('   • Newest       : kimi        → Kimi K2.6 (1T MoE)');
-  console.log('   • Fast Free    : step-flash  → Step-3.7 Flash');
-  console.log('🔄 Fallback Chain (on 429):');
+  console.log('🎯 Confirmed Working Models (August 2026):');
+  console.log('   • glm-pro          → GLM-5.2          (8M calls/mo) ✅');
+  console.log('   • minimax          → MiniMax M3        (10M calls/mo) ✅');
+  console.log('   • gpt-3.5-turbo    → Nemotron Ultra 550B (52M calls/mo) ✅');
+  console.log('   • gpt-4o-mini      → Nemotron Lightning 30B (NEW Aug 2026) ✅');
+  console.log('   • step-flash       → Step-3.7 Flash    (7M calls/mo) ✅');
+  console.log('   • deepseek-v4-pro  → DeepSeek V4 Pro   (1M ctx) ✅');
+  console.log('   ⚠️  deepseek-v4-flash REMOVED — deprecated on NIM');
+  console.log('');
+  console.log('🔄 Fallback Chain (on 429/503/410):');
   FALLBACK_CHAIN.forEach((m, i) => console.log(`   ${i + 1}. ${m}`));
   console.log('═══════════════════════════════════════════════════════');
 });
